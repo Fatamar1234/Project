@@ -1,377 +1,363 @@
-"""MovieLens dashboard — four required Week 4 charts.
-
-Build notes (keep for next week's write-up):
-- Prompt: answer Q1–Q4 as written with charts; CSV from CUNY Tech Prep movie_ratings.csv.
-- First pass already had Plotly + Streamlit; this pass makes Q4 show floors 50 and 150
-  side by side (the actual question) instead of only a slider, and labels Q3 as
-  *release year*, not year rated.
-- Chart choices: sorted horizontal bars for genres (too many slices for a pie),
-  line for mean rating by release year, grouped bars for top-5 under two floors.
 """
-
+Movie Ratings Explorer
+ 
+Question 1 — Genre Breakdown:
+    What's the distribution of genres among the movies that were rated?
+Question 2 — Genre Satisfaction:
+    Which genres have the highest average rating? Which have the lowest?
+ 
+Run with:  streamlit run app.py
+Expects movie_ratings.csv in the same folder as this file.
+"""
+ 
 from pathlib import Path
-
+ 
+import altair as alt
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-
-DATA_PATH = Path(__file__).parent / "data" / "movie_ratings.csv"
-
-st.set_page_config(
-    page_title="MovieLens Dashboard",
-    page_icon="🎬",
-    layout="wide",
-)
-
-CHART_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#FAFAFA"),
-    margin=dict(l=10, r=10, t=48, b=10),
-)
-
-
+ 
+DATA_PATH = Path(__file__).parent / "movie_ratings.csv"
+ 
+st.set_page_config(page_title="Movie Ratings Explorer", layout="wide")
+ 
+ 
 @st.cache_data
-def load_ratings() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH)
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
-    df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
-    df = df.dropna(subset=["rating", "movie_id", "title"])
-    df["genres"] = df["genres"].fillna("unknown").astype(str)
-    return df
-
-
-def explode_genres(frame: pd.DataFrame) -> pd.DataFrame:
-    """One row per (original row, genre). Pipe-separated tags become separate rows."""
-    out = frame.copy()
-    out["genre"] = out["genres"].str.split("|")
-    out = out.explode("genre")
-    out["genre"] = out["genre"].str.strip()
-    return out[out["genre"].ne("") & out["genre"].notna()]
-
-
-def top_movies(stats: pd.DataFrame, floor: int, genre_ids=None) -> pd.DataFrame:
-    work = stats
-    if genre_ids is not None:
-        work = work[work["movie_id"].isin(genre_ids)]
-    eligible = work[work["n_ratings"] >= floor]
-    return eligible.sort_values(
-        ["avg_rating", "n_ratings"], ascending=[False, False]
-    ).head(5)
-
-
-def ranked_bar(frame: pd.DataFrame, floor: int):
-    if frame.empty:
-        return None
-    plot = frame.sort_values("avg_rating", ascending=True)
-    fig = px.bar(
-        plot,
-        x="avg_rating",
-        y="title",
-        orientation="h",
-        title=f"Top 5 with at least {floor} ratings",
-        labels={"avg_rating": "Mean rating (1–5)", "title": "Movie"},
-        hover_data={"n_ratings": True, "avg_rating": ":.3f"},
-        text=plot["avg_rating"].map(lambda x: f"{x:.2f}"),
-    )
-    fig.update_traces(textposition="outside")
-    fig.update_layout(**CHART_LAYOUT, height=340)
-    fig.update_xaxes(range=[3.5, 5])
-    return fig
-
-
-ratings = load_ratings()
-movies = ratings.drop_duplicates(subset=["movie_id"]).copy()
-
-years_present = movies["year"].dropna()
-year_min = int(years_present.min())
-year_max = int(years_present.max())
-
-st.title("MovieLens Dashboard")
-st.caption(
-    "Source: GroupLens MovieLens (`movie_ratings.csv`, 100,000 ratings). "
-    "Each chart answers one of the four Week 4 questions as written."
-)
-
-with st.sidebar:
-    st.header("Filters")
-    year_range = st.slider(
-        "Movie release years",
-        min_value=year_min,
-        max_value=year_max,
-        value=(year_min, year_max),
-        help="Uses the movie's release year, not the year the rating was submitted.",
-    )
-    min_year_n = st.slider(
-        "Hide sparse years (Q3)",
-        min_value=1,
-        max_value=200,
-        value=30,
-        help="Years with fewer ratings than this are omitted from the time-series so early noisy years don't dominate the line.",
-    )
-    extra_floor = st.slider(
-        "Custom ratings floor (Q4)",
-        min_value=10,
-        max_value=300,
-        value=50,
-        step=10,
-        help="The assignment asks for 50 and 150; this slider lets you try other floors.",
-    )
-    all_genres = sorted(explode_genres(movies)["genre"].unique())
-    selected_genres = st.multiselect(
-        "Restrict top movies to these genres (optional)",
-        options=all_genres,
-        default=[],
-        help="Leave empty to include every genre. Applies to Question 4 only.",
-    )
-
-in_year = ratings["year"].between(year_range[0], year_range[1]) | ratings["year"].isna()
-filtered = ratings[in_year]
-filtered_movies = filtered.drop_duplicates(subset=["movie_id"])
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Ratings in view", f"{len(filtered):,}")
-c2.metric("Movies in view", f"{filtered_movies['movie_id'].nunique():,}")
-c3.metric("Mean rating in view", f"{filtered['rating'].mean():.2f}")
-
-# --- Question 1 ---
-n_rated_movies = filtered_movies["movie_id"].nunique()
-genre_movies = explode_genres(filtered_movies)
-genre_counts = (
-    genre_movies.groupby("genre", as_index=False)["movie_id"]
-    .nunique()
-    .rename(columns={"movie_id": "movie_count"})
-)
-genre_counts["pct_of_movies"] = 100 * genre_counts["movie_count"] / n_rated_movies
-genre_counts = genre_counts.sort_values("movie_count", ascending=True)
-
-st.header("Question 1 — Genre breakdown")
-st.subheader("What's the distribution of genres among the movies that were rated?")
-st.markdown(
-    f"""
-**How multiple genres are handled, before any count:** each movie stores genres as a
-pipe-separated string (`Comedy|Romance`). I split on `|` and explode so each tag is
-its own row. I then keep **one row per movie** (`movie_id`) before counting, so this
-is the mix of **{n_rated_movies:,} unique movies that appear in the ratings file**,
-not 100,000 rating events.
-
-*Toy Story* (`Animation|Children|Comedy`) adds **1** to Animation, **1** to Children,
-and **1** to Comedy. It does not become a single combo category, and it is not counted
-once per user who rated it.
-
-Because tags overlap, the bars sum to **{int(genre_counts['movie_count'].sum()):,}**
-movie–genre pairs (about **{genre_counts['movie_count'].sum() / n_rated_movies:.2f}**
-genres per movie) — more than 100% of movies. That is expected. Two titles are tagged
-`unknown` in the source file; they are kept as their own bar rather than dropped.
-"""
-)
-
-fig1 = px.bar(
-    genre_counts,
-    x="movie_count",
-    y="genre",
-    orientation="h",
-    title="Rated movies by genre (unique titles, sorted by count)",
-    labels={"movie_count": "Number of unique movies", "genre": "Genre"},
-    hover_data={"pct_of_movies": ":.1f"},
-)
-fig1.update_layout(**CHART_LAYOUT, height=560)
-st.plotly_chart(fig1, use_container_width=True, key="q1_genre_counts")
-st.caption(
-    "Horizontal bar chart, sorted by count (not alphabetical). Not a pie: there are "
-    "~19 categories and overlapping tags, so slices would not be a true partition of movies. "
-    "Hover shows the share of unique rated movies that carry that genre."
-)
-
-# --- Question 2 ---
-genre_avg = (
-    explode_genres(filtered)
-    .groupby("genre", as_index=False)
-    .agg(
-        avg_rating=("rating", "mean"),
-        n_ratings=("rating", "size"),
-        n_movies=("movie_id", "nunique"),
-    )
-    .sort_values("avg_rating", ascending=True)
-)
-highest_genre = genre_avg.iloc[-1]
-lowest_genre = genre_avg.iloc[0]
-named = genre_avg[genre_avg["genre"].str.lower() != "unknown"]
-lowest_named = named.iloc[0]
-genre_avg["highlight"] = "Other"
-genre_avg.loc[genre_avg["genre"] == highest_genre["genre"], "highlight"] = "Highest"
-genre_avg.loc[genre_avg["genre"] == lowest_genre["genre"], "highlight"] = "Lowest"
-
-st.header("Question 2 — Genre satisfaction")
-st.subheader("Which genres have the highest average rating? Which have the lowest?")
-st.markdown(
-    f"""
-**Mean rating** = arithmetic mean of **user ratings** after the same `|` explode as
-Question 1. A 5 on *Toy Story* counts toward Animation, Children, and Comedy. I do
-**not** average per-movie first (that would equally weight a film with 2 ratings and
-one with 300).
-
-**Highest:** **{highest_genre['genre']}** at **{highest_genre['avg_rating']:.2f}**
-({int(highest_genre['n_ratings']):,} ratings · {int(highest_genre['n_movies'])} movies).
-
-**Lowest:** **{lowest_genre['genre']}** at **{lowest_genre['avg_rating']:.2f}**
-({int(lowest_genre['n_ratings']):,} ratings · {int(lowest_genre['n_movies'])} movies).
-Among named genres, **{lowest_named['genre']}** is lowest at
-**{lowest_named['avg_rating']:.2f}**.
-
-The 1–5 scale is compressed in practice (~{lowest_genre['avg_rating']:.2f}–{highest_genre['avg_rating']:.2f}),
-so the axis is zoomed to the data instead of forced to 0–5.
-"""
-)
-
-fig2 = px.bar(
-    genre_avg,
-    x="avg_rating",
-    y="genre",
-    orientation="h",
-    color="highlight",
-    color_discrete_map={
-        "Highest": "#3DDC97",
-        "Lowest": "#E50914",
-        "Other": "#6E7681",
-    },
-    title="Mean user rating by genre (sorted)",
-    labels={"avg_rating": "Mean rating (1–5)", "genre": "Genre", "highlight": ""},
-    hover_data={"n_ratings": True, "n_movies": True, "avg_rating": ":.3f"},
-)
-fig2.update_layout(**CHART_LAYOUT, height=560, showlegend=False)
-fig2.update_xaxes(range=[3.0, 4.1])
-st.plotly_chart(fig2, use_container_width=True, key="q2_genre_means")
-st.caption("Sorted by mean rating, not alphabetically. Green = highest, red = lowest.")
-
-# --- Question 3 ---
-by_year = (
-    filtered.dropna(subset=["year"])
-    .groupby("year", as_index=False)
-    .agg(mean_rating=("rating", "mean"), n_ratings=("rating", "size"))
-    .sort_values("year")
-)
-by_year_plot = by_year[by_year["n_ratings"] >= min_year_n]
-overall = filtered["rating"].mean()
-
-st.header("Question 3 — Ratings over time")
-st.subheader("How has the mean rating changed across movie release years?")
-st.markdown(
-    f"""
-This is **mean rating by movie release year** (`year`), not by when the user submitted
-the rating (`rating_year` is mostly 1997–1998 in this file). Mean = average of all
-rating rows for movies released that year.
-
-Early decades have very few ratings (e.g. 1926 has 2). The sidebar **Hide sparse years**
-control defaults to dropping years with fewer than **{min_year_n}** ratings so those
-spikes don't look like a real trend. Overall mean in the current view:
-**{overall:.2f}**.
-"""
-)
-
-fig3 = px.line(
-    by_year_plot,
-    x="year",
-    y="mean_rating",
-    title="Mean rating by movie release year",
-    labels={"year": "Release year", "mean_rating": "Mean rating (1–5)"},
-    markers=True,
-    hover_data={"n_ratings": True, "mean_rating": ":.3f"},
-)
-fig3.update_layout(**CHART_LAYOUT, height=420)
-fig3.update_yaxes(range=[2.8, 4.3])
-fig3.add_hline(
-    y=overall,
-    line_dash="dot",
-    line_color="#8B949E",
-    annotation_text="overall mean",
-    annotation_position="top left",
-)
-st.plotly_chart(fig3, use_container_width=True, key="q3_mean_by_year")
-st.caption(
-    "Line chart over release year. Newer 1990s titles (the bulk of the catalog) sit "
-    "slightly below the overall mean; older, still-rated classics sit above it."
-)
-
-# --- Question 4 ---
-movie_stats = filtered.groupby(["movie_id", "title"], as_index=False).agg(
-    avg_rating=("rating", "mean"),
-    n_ratings=("rating", "size"),
-)
-
-genre_ids = None
-if selected_genres:
-    movie_genre_map = explode_genres(filtered_movies)[["movie_id", "genre"]]
-    genre_ids = movie_genre_map[movie_genre_map["genre"].isin(selected_genres)][
-        "movie_id"
-    ].unique()
-
-top50 = top_movies(movie_stats, 50, genre_ids)
-top150 = top_movies(movie_stats, 150, genre_ids)
-top_custom = top_movies(movie_stats, extra_floor, genre_ids)
-
-st.header("Question 4 — Best movies, with a floor")
-st.subheader(
-    "What are the top 5 best-rated movies with at least 50 ratings? What changes at 150?"
-)
-st.markdown(
+def load_data(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path)
+ 
+ 
+def genre_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    """Q1: count genres across distinct movies.
+ 
+    Each movie is counted once (not once per rating), and a movie with
+    several pipe-separated genres counts toward each of them.
     """
-**Floor** = a movie must have at least *n* ratings before its mean can appear in the
-ranking. Without a floor, a 5.0 from two friends beats *Casablanca*. Rank is by mean
-rating, with rating count as the tie-breaker.
-
-Raising the floor from 50 → 150 drops Wallace & Gromit shorts that are loved but
-less widely rated, and keeps widely seen classics.
-"""
+    movies = df.drop_duplicates("movie_id")[["movie_id", "genres"]]
+    genres = movies["genres"].str.split("|").explode()
+    counts = genres.value_counts().rename_axis("genre").reset_index(name="movies")
+    counts["share_of_movies"] = counts["movies"] / len(movies)
+    return counts
+ 
+ 
+def genre_ratings(df: pd.DataFrame) -> pd.DataFrame:
+    """Q2: average rating per genre, using every individual rating.
+ 
+    A rating of a multi-genre movie counts toward each of its genres.
+    """
+    exploded = df.assign(genre=df["genres"].str.split("|")).explode("genre")
+    return (
+        exploded.groupby("genre")["rating"]
+        .agg(avg_rating="mean", num_ratings="count")
+        .reset_index()
+    )
+ 
+ 
+# ---------- Load ----------
+if not DATA_PATH.exists():
+    st.error(
+        f"Couldn't find {DATA_PATH.name}. Put it in the same folder as app.py and rerun."
+    )
+    st.stop()
+ 
+df = load_data(DATA_PATH)
+n_movies = df["movie_id"].nunique()
+overall_avg = df["rating"].mean()
+ 
+# One table with both answers per genre. 'unknown' is a placeholder tag
+# (2 movies, 10 ratings), so it's left out.
+genres = genre_distribution(df).merge(genre_ratings(df), on="genre")
+genres = genres[genres["genre"] != "unknown"]
+genres["vs_overall"] = genres["avg_rating"].apply(
+    lambda r: "Above overall average" if r >= overall_avg else "Below overall average"
 )
-
-left, right = st.columns(2)
-with left:
-    fig50 = ranked_bar(top50, 50)
-    if fig50 is None:
-        st.warning("No movies meet a floor of 50 in the current filters.")
-    else:
-        st.plotly_chart(fig50, use_container_width=True, key="q4_floor_50")
-        st.dataframe(
-            top50.assign(avg_rating=lambda d: d["avg_rating"].round(3))[
-                ["title", "avg_rating", "n_ratings"]
-            ].rename(
-                columns={
-                    "title": "Movie",
-                    "avg_rating": "Mean rating",
-                    "n_ratings": "Ratings",
-                }
+ 
+by_count = genres.sort_values("movies", ascending=False)
+by_rating = genres.sort_values("avg_rating", ascending=False)
+ 
+st.title("Movie Ratings Explorer")
+ 
+tooltip = [
+    alt.Tooltip("genre:N", title="Genre"),
+    alt.Tooltip("movies:Q", title="Movies"),
+    alt.Tooltip("share_of_movies:Q", title="Share of movies", format=".1%"),
+    alt.Tooltip("avg_rating:Q", title="Average rating", format=".2f"),
+    alt.Tooltip("num_ratings:Q", title="Ratings", format=","),
+]
+ 
+# ---------- Question 1 — Genre Breakdown ----------
+st.header("Question 1 — Genre Breakdown")
+st.write("What's the distribution of genres among the movies that were rated?")
+ 
+q1a, q1b, q1c = st.columns(3)
+q1a.metric("Rated movies", f"{n_movies:,}")
+q1b.metric("Most common genre", by_count.iloc[0]["genre"], f"{by_count.iloc[0]['movies']} movies")
+q1c.metric("Least common genre", by_count.iloc[-1]["genre"], f"{by_count.iloc[-1]['movies']} movies", delta_color="off")
+ 
+count_chart = (
+    alt.Chart(genres)
+    .mark_bar(color="#4c78a8")
+    .encode(
+        x=alt.X("movies:Q", title="Number of movies"),
+        y=alt.Y("genre:N", sort="-x", title=None),
+        tooltip=tooltip,
+    )
+    .properties(height=500)
+)
+st.altair_chart(count_chart, use_container_width=True)
+st.caption(
+    f"Each of the {n_movies:,} distinct movies is counted once. Movies with several "
+    "genres count toward each one, so the bars sum to more than the number of movies. "
+    "The 'unknown' genre (2 movies) is excluded."
+)
+ 
+# ---------- Question 2 — Genre Satisfaction ----------
+st.divider()
+st.header("Question 2 — Genre Satisfaction")
+st.write("Which genres have the highest average rating? Which have the lowest?")
+ 
+q2a, q2b, q2c = st.columns(3)
+q2a.metric("Highest rated genre", by_rating.iloc[0]["genre"], f"{by_rating.iloc[0]['avg_rating']:.2f} avg")
+q2b.metric("Lowest rated genre", by_rating.iloc[-1]["genre"], f"{by_rating.iloc[-1]['avg_rating']:.2f} avg", delta_color="inverse")
+q2c.metric("Overall average rating", f"{overall_avg:.2f}")
+ 
+rating_bars = (
+    alt.Chart(genres)
+    .mark_bar()
+    .encode(
+        x=alt.X("avg_rating:Q", title="Average rating (1–5)", scale=alt.Scale(domain=[1, 5])),
+        y=alt.Y("genre:N", sort="-x", title=None),
+        color=alt.Color(
+            "vs_overall:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["Above overall average", "Below overall average"],
+                range=["#2b8a6e", "#c9673a"],
             ),
-            hide_index=True,
-            use_container_width=True,
-        )
-with right:
-    fig150 = ranked_bar(top150, 150)
-    if fig150 is None:
-        st.warning("No movies meet a floor of 150 in the current filters.")
-    else:
-        st.plotly_chart(fig150, use_container_width=True, key="q4_floor_150")
-        st.dataframe(
-            top150.assign(avg_rating=lambda d: d["avg_rating"].round(3))[
-                ["title", "avg_rating", "n_ratings"]
-            ].rename(
-                columns={
-                    "title": "Movie",
-                    "avg_rating": "Mean rating",
-                    "n_ratings": "Ratings",
-                }
-            ),
-            hide_index=True,
-            use_container_width=True,
-        )
+            legend=alt.Legend(orient="top"),
+        ),
+        tooltip=tooltip,
+    )
+)
+overall_line = (
+    alt.Chart(pd.DataFrame({"overall": [overall_avg]}))
+    .mark_rule(strokeDash=[4, 4], color="gray")
+    .encode(x="overall:Q")
+)
+st.altair_chart(
+    (rating_bars + overall_line).properties(height=500),
+    use_container_width=True
+)
+st.caption(
+    "Averages use all individual ratings; a rating for a multi-genre movie counts toward "
+    f"each of its genres. The dashed line is the overall average ({overall_avg:.2f}). "
+    "The 'unknown' genre (10 ratings) is excluded."
+)
+ 
+with st.expander("See the numbers for Questions 1 and 2"):
+    st.dataframe(
+        by_count[["genre", "movies", "share_of_movies", "avg_rating", "num_ratings"]]
+        .style.format(
+            {"share_of_movies": "{:.1%}", "avg_rating": "{:.2f}", "num_ratings": "{:,}"}
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+ # new line 
 
-st.subheader(f"Custom floor: {extra_floor} ratings")
-fig_c = ranked_bar(top_custom, extra_floor)
-if fig_c is None:
-    st.warning("No movies meet this custom floor in the current filters.")
-else:
-    st.plotly_chart(fig_c, use_container_width=True, key="q4_floor_custom")
-    st.caption(
-        "Use the sidebar slider to try floors other than 50 and 150. "
-        "Optional genre filter applies to all three rankings."
+
+st.divider()
+st.header("Ratings Over Time")
+st.write("How has the mean rating changed across movie release years?")
+ 
+ 
+def ratings_by_release_year(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean rating for each movie release year, using every individual rating.
+ 
+    Rows without a release year are dropped. A 5-year centered rolling
+    average (weighted by number of ratings) smooths out noisy years.
+    """
+    by_year = (
+        df.dropna(subset=["year"])
+        .groupby("year")["rating"]
+        .agg(avg_rating="mean", num_ratings="count", rating_sum="sum")
+        .reset_index()
+    )
+    by_year["year"] = by_year["year"].astype(int)
+    roll_sum = by_year["rating_sum"].rolling(5, center=True, min_periods=1).sum()
+    roll_n = by_year["num_ratings"].rolling(5, center=True, min_periods=1).sum()
+    by_year["rolling_avg"] = roll_sum / roll_n
+    return by_year.drop(columns="rating_sum")
+ 
+ 
+by_year = ratings_by_release_year(df)
+early = df[df["year"] < 1960]["rating"].mean()
+late = df[df["year"] >= 1990]["rating"].mean()
+ 
+q3a, q3b, q3c = st.columns(3)
+q3a.metric("Release years covered", f"{by_year['year'].min()}–{by_year['year'].max()}")
+q3b.metric("Avg rating, movies before 1960", f"{early:.2f}")
+q3c.metric("Avg rating, movies from 1990 on", f"{late:.2f}", f"{late - early:+.2f} vs. pre-1960")
+ 
+year_tooltip = [
+    alt.Tooltip("year:O", title="Release year"),
+    alt.Tooltip("avg_rating:Q", title="Mean rating", format=".2f"),
+    alt.Tooltip("rolling_avg:Q", title="5-year average", format=".2f"),
+    alt.Tooltip("num_ratings:Q", title="Ratings", format=","),
+]
+x_year = alt.X("year:Q", title="Movie release year", axis=alt.Axis(format="d"))
+base = alt.Chart(by_year)
+ 
+yearly_points = base.mark_circle(color="#4c78a8", opacity=0.55).encode(
+    x=x_year,
+    y=alt.Y("avg_rating:Q", title="Mean rating (1–5)", scale=alt.Scale(domain=[2.5, 4.5])),
+    size=alt.Size("num_ratings:Q", title="Number of ratings", scale=alt.Scale(range=[15, 400])),
+    tooltip=year_tooltip,
+)
+yearly_line = base.mark_line(color="#4c78a8", opacity=0.3, strokeWidth=1).encode(
+    x=x_year, y="avg_rating:Q"
+)
+trend_line = base.mark_line(color="#c9673a", strokeWidth=3).encode(
+    x=x_year, y="rolling_avg:Q", tooltip=year_tooltip
+)
+overall_rule = (
+    alt.Chart(pd.DataFrame({"overall": [overall_avg]}))
+    .mark_rule(strokeDash=[4, 4], color="gray")
+    .encode(y="overall:Q")
+)
+ 
+st.altair_chart(
+    (yearly_line + yearly_points + trend_line + overall_rule)
+    .properties(height=480, title="Rating over Time: mean rating by movie release year"),
+    use_container_width=True,
+)
+st.caption(
+    "Blue dots are each release year's mean rating, sized by how many ratings that year has. "
+    "The orange line is a 5-year rolling average weighted by number of ratings. "
+    f"The dashed line is the overall average ({overall_avg:.2f}). "
+    "Early years have few ratings, so their dots jump around more. "
+    "Ratings for 30 rows with no release year are excluded."
+)
+ 
+with st.expander("See the numbers for Question 3"):
+    st.dataframe(
+        by_year.style.format(
+            {"avg_rating": "{:.2f}", "rolling_avg": "{:.2f}", "num_ratings": "{:,}"}
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+ 
+
+
+# ---------- Question 4 — Best Movies, With a Floor ----------
+st.divider()
+st.header("Question 4 — Best Movies, With a Floor")
+st.write(
+    "What are the top 5 best-rated movies, once you only count movies with at least "
+    "50 ratings? What changes if you raise that floor to 150?"
+)
+ 
+ 
+@st.cache_data
+def movie_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean rating and number of ratings for every movie (grouped by movie_id)."""
+    return (
+        df.groupby(["movie_id", "title"])["rating"]
+        .agg(avg_rating="mean", num_ratings="count")
+        .reset_index()
+    )
+ 
+ 
+def top_movies(stats: pd.DataFrame, floor: int, n: int = 5) -> pd.DataFrame:
+    """Top n movies by mean rating among movies with at least `floor` ratings.
+ 
+    Ties on mean rating are broken by number of ratings.
+    """
+    eligible = stats[stats["num_ratings"] >= floor]
+    top = eligible.sort_values(["avg_rating", "num_ratings"], ascending=False).head(n).copy()
+    top["rank"] = range(1, len(top) + 1)
+    return top
+ 
+ 
+stats = movie_stats(df)
+top50 = top_movies(stats, 50)
+top150 = top_movies(stats, 150)
+dropped = top50[~top50["movie_id"].isin(top150["movie_id"])]
+added = top150[~top150["movie_id"].isin(top50["movie_id"])]
+ 
+q4a, q4b, q4c = st.columns(3)
+q4a.metric("Movies with 50+ ratings", f"{(stats['num_ratings'] >= 50).sum():,}")
+q4b.metric("Movies with 150+ ratings", f"{(stats['num_ratings'] >= 150).sum():,}")
+q4c.metric("Top-5 movies that change", f"{len(dropped)} of 5")
+ 
+STATUS_COLORS = alt.Scale(
+    domain=["In both top 5s", "Only in the 50+ top 5", "Only in the 150+ top 5"],
+    range=["#4c78a8", "#c9673a", "#2b8a6e"],
+)
+ 
+ 
+def top_chart(top: pd.DataFrame, floor: int) -> alt.Chart:
+    in_both = top["movie_id"].isin(top50["movie_id"]) & top["movie_id"].isin(top150["movie_id"])
+    only_label = "Only in the 50+ top 5" if floor == 50 else "Only in the 150+ top 5"
+    top = top.assign(status=["In both top 5s" if b else only_label for b in in_both])
+    bars = (
+        alt.Chart(top)
+        .mark_bar()
+        .encode(
+            x=alt.X("avg_rating:Q", title="Mean rating (1–5)", scale=alt.Scale(domain=[1, 5])),
+            y=alt.Y("title:N", sort=alt.EncodingSortField("rank", order="ascending"), title=None,
+                    axis=alt.Axis(labelLimit=260)),
+            color=alt.Color("status:N", title=None, scale=STATUS_COLORS,
+                            legend=alt.Legend(orient="bottom")),
+            tooltip=[
+                alt.Tooltip("rank:O", title="Rank"),
+                alt.Tooltip("title:N", title="Movie"),
+                alt.Tooltip("avg_rating:Q", title="Mean rating", format=".3f"),
+                alt.Tooltip("num_ratings:Q", title="Ratings", format=","),
+            ],
+        )
+    )
+    labels = bars.mark_text(align="left", dx=4, color="gray").encode(
+        text=alt.Text("avg_rating:Q", format=".2f"), color=alt.value("gray")
+    )
+    return (bars + labels).properties(height=260, title=f"Top 5 with at least {floor} ratings")
+ 
+ 
+left4, right4 = st.columns(2)
+
+with left4:
+    st.altair_chart(
+        top_chart(top50, 50),
+        use_container_width=True
+    )
+
+with right4:
+    st.altair_chart(
+        top_chart(top150, 150),
+        use_container_width=True
+    )
+if len(dropped):
+    st.markdown(
+        "**What changes at 150:** "
+        + ", ".join(f"{t} ({n} ratings)" for t, n in zip(dropped["title"], dropped["num_ratings"]))
+        + " drop out because they have fewer than 150 ratings. "
+        + ", ".join(added["title"])
+        + " move up into the top 5."
+    )
+ 
+st.caption(
+    "Mean rating uses every individual rating for the movie. Ties are broken by number of "
+    "ratings. Without any floor, the top of the list is movies rated 5.0 by only 1–3 people."
+)
+ 
+with st.expander("Try your own floor"):
+    floor = st.slider("Minimum number of ratings", 1, 300, 50, step=5)
+    custom = top_movies(stats, floor, n=10)
+    st.write(f"{(stats['num_ratings'] >= floor).sum():,} movies have at least {floor} ratings. Top 10:")
+    st.dataframe(
+        custom[["rank", "title", "avg_rating", "num_ratings"]].style.format(
+            {"avg_rating": "{:.3f}", "num_ratings": "{:,}"}
+        ),
+        hide_index=True,
+        width="stretch",
     )
